@@ -1,5 +1,13 @@
 use chrono::{Datelike, Duration, Local, NaiveDate, Utc};
 use colored::*;
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode, KeyModifiers},
+    execute, queue,
+    style::Print,
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use std::io::{self, Write};
 
 /// GPS epoch: January 6, 1980
 fn gps_epoch() -> NaiveDate {
@@ -90,14 +98,14 @@ fn fmt_gps_week(week: i64, is_future: bool) -> String {
     }
 }
 
-fn print_month(cal: &MonthCalendar, today: NaiveDate) {
+fn format_month(cal: &MonthCalendar, today: NaiveDate) -> String {
+    let mut out = String::new();
     let month_str = month_name(cal.month);
 
     // Each panel is 36 chars: " GPS WK" (7) + "  " (1) + 7 * " xxx" (28) = 36
     let panel_width = 36;
     let gap = "   ";
 
-    // Title
     let dom_title = month_str.to_string();
     let mid_label = format!("{}", cal.year);
     let doy_title = format!("{} DOY", month_str);
@@ -106,21 +114,24 @@ fn print_month(cal: &MonthCalendar, today: NaiveDate) {
     let right_pad_dom = panel_width - left_pad_dom - dom_title.len();
     let left_pad_doy = (panel_width - doy_title.len()) / 2;
 
-    println!(
-        "{}{}{}{}{}{}",
+    out.push_str(&format!(
+        "{}{}{}{}{}{}\n",
         " ".repeat(left_pad_dom),
         dom_title.white().bold(),
         " ".repeat(right_pad_dom),
         format!("{:^3}", mid_label).bright_black(),
         " ".repeat(left_pad_doy),
         doy_title.white().bold(),
-    );
+    ));
 
-    // Column headers
     let day_hdr = " GPS WK  Sun Mon Tue Wed Thu Fri Sat";
-    println!("{}{}{}", day_hdr.bright_black(), gap, day_hdr.bright_black());
+    out.push_str(&format!(
+        "{}{}{}\n",
+        day_hdr.bright_black(),
+        gap,
+        day_hdr.bright_black()
+    ));
 
-    // Rows
     for (gw, days) in &cal.weeks {
         let mut dom_cells = String::new();
         let mut doy_cells = String::new();
@@ -139,38 +150,149 @@ fn print_month(cal: &MonthCalendar, today: NaiveDate) {
         }
 
         let week_is_future = gps_week_start(*gw) > today;
-        println!(
-            " {} {}{} {} {}",
+        out.push_str(&format!(
+            " {} {}{} {} {}\n",
             fmt_gps_week(*gw, week_is_future),
             dom_cells,
             gap,
             fmt_gps_week(*gw, week_is_future),
             doy_cells
-        );
+        ));
     }
+    out
 }
 
-fn main() {
-    let now_utc = Utc::now();
-    let now_local = now_utc.with_timezone(&Local);
-    let today = now_utc.date_naive();
+fn print_month(cal: &MonthCalendar, today: NaiveDate) {
+    print!("{}", format_month(cal, today));
+}
 
+fn shift_month(date: NaiveDate, months: i32) -> NaiveDate {
+    let total = date.year() * 12 + (date.month() as i32 - 1) + months;
+    let y = total.div_euclid(12);
+    let m = total.rem_euclid(12) as u32 + 1;
+    NaiveDate::from_ymd_opt(y, m, 1).unwrap()
+}
+
+fn format_now_header(now_utc: chrono::DateTime<Utc>, now_local: chrono::DateTime<Local>) -> String {
     let utc_time = format!("{:<26}", now_utc.format("%Y-%m-%d %H:%M:%S UTC"));
     let local_time = format!("{:<26}", now_local.format("%Y-%m-%d %H:%M:%S %Z"));
-    println!(
-        "{} {}  {}{}",
+    let mut s = String::new();
+    s.push_str(&format!(
+        "{} {}  {}{}\n",
         "Now (UTC):  ".white().bold(),
         utc_time.bright_cyan(),
         "DOY ".white().bold(),
         format!("{:03}", now_utc.ordinal()).bright_cyan()
-    );
-    println!(
-        "{} {}  {}{}",
+    ));
+    s.push_str(&format!(
+        "{} {}  {}{}\n",
         "Now (Local):".white().bold(),
         local_time.bright_cyan(),
         "DOY ".white().bold(),
         format!("{:03}", now_local.ordinal()).bright_cyan()
-    );
+    ));
+    s
+}
+
+fn run_interactive(today: NaiveDate) -> io::Result<()> {
+    let mut view = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+    let mut stdout = io::stdout();
+
+    let panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = terminal::disable_raw_mode();
+        let _ = execute!(io::stdout(), LeaveAlternateScreen, cursor::Show);
+        panic_hook(info);
+    }));
+
+    terminal::enable_raw_mode()?;
+    execute!(stdout, EnterAlternateScreen, cursor::Hide)?;
+
+    let result = (|| -> io::Result<()> {
+        loop {
+            let now_utc = Utc::now();
+            let now_local = now_utc.with_timezone(&Local);
+            let prev = shift_month(view, -1);
+            let next = shift_month(view, 1);
+
+            let mut body = String::new();
+            body.push_str(&format_now_header(now_utc, now_local));
+            body.push_str(&format!(
+                "{} {}\n\n",
+                "View:       ".white().bold(),
+                format!("{} {}", month_name(view.month()), view.year()).bright_yellow()
+            ));
+            body.push_str(&format_month(
+                &MonthCalendar::new(prev.year(), prev.month()),
+                today,
+            ));
+            body.push('\n');
+            body.push_str(&format_month(
+                &MonthCalendar::new(view.year(), view.month()),
+                today,
+            ));
+            body.push('\n');
+            body.push_str(&format_month(
+                &MonthCalendar::new(next.year(), next.month()),
+                today,
+            ));
+            body.push('\n');
+            body.push_str(&format!(
+                "{}",
+                "← →  month     ↑ ↓  year     t  today     q  quit".bright_black()
+            ));
+
+            queue!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
+            for line in body.split('\n') {
+                queue!(stdout, Print(line), cursor::MoveToNextLine(1))?;
+            }
+            stdout.flush()?;
+
+            match event::read()? {
+                Event::Key(k) => match (k.code, k.modifiers) {
+                    (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
+                    (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
+                    (KeyCode::Left, _)
+                    | (KeyCode::Char('h'), _)
+                    | (KeyCode::PageUp, _) => view = shift_month(view, -1),
+                    (KeyCode::Right, _)
+                    | (KeyCode::Char('l'), _)
+                    | (KeyCode::PageDown, _) => view = shift_month(view, 1),
+                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => view = shift_month(view, -12),
+                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => view = shift_month(view, 12),
+                    (KeyCode::Char('t'), _) | (KeyCode::Home, _) => {
+                        view = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        Ok(())
+    })();
+
+    execute!(stdout, cursor::Show, LeaveAlternateScreen)?;
+    terminal::disable_raw_mode()?;
+    result
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let interactive = args.iter().any(|a| a == "-i" || a == "--interactive");
+
+    let now_utc = Utc::now();
+    let now_local = now_utc.with_timezone(&Local);
+    let today = now_utc.date_naive();
+
+    if interactive {
+        if let Err(e) = run_interactive(today) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    print!("{}", format_now_header(now_utc, now_local));
     println!();
 
     // Previous month
