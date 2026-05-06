@@ -239,7 +239,7 @@ fn run_interactive(today: NaiveDate) -> io::Result<()> {
             body.push('\n');
             body.push_str(&format!(
                 "{}",
-                "← →  month     ↑ ↓  year     t  today     q  quit".bright_black()
+                "↑ ↓  month     ← →  year     t  today     q  quit".bright_black()
             ));
 
             queue!(stdout, Clear(ClearType::All), cursor::MoveTo(0, 0))?;
@@ -252,14 +252,14 @@ fn run_interactive(today: NaiveDate) -> io::Result<()> {
                 Event::Key(k) => match (k.code, k.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => break,
                     (KeyCode::Char('c'), m) if m.contains(KeyModifiers::CONTROL) => break,
-                    (KeyCode::Left, _)
-                    | (KeyCode::Char('h'), _)
+                    (KeyCode::Up, _)
+                    | (KeyCode::Char('k'), _)
                     | (KeyCode::PageUp, _) => view = shift_month(view, -1),
-                    (KeyCode::Right, _)
-                    | (KeyCode::Char('l'), _)
+                    (KeyCode::Down, _)
+                    | (KeyCode::Char('j'), _)
                     | (KeyCode::PageDown, _) => view = shift_month(view, 1),
-                    (KeyCode::Up, _) | (KeyCode::Char('k'), _) => view = shift_month(view, -12),
-                    (KeyCode::Down, _) | (KeyCode::Char('j'), _) => view = shift_month(view, 12),
+                    (KeyCode::Left, _) | (KeyCode::Char('h'), _) => view = shift_month(view, -12),
+                    (KeyCode::Right, _) | (KeyCode::Char('l'), _) => view = shift_month(view, 12),
                     (KeyCode::Char('t'), _) | (KeyCode::Home, _) => {
                         view = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap();
                     }
